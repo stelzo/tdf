@@ -63,6 +63,7 @@ pub struct ImageData {
 #[derive(Default)]
 struct PrevRender {
 	successful: bool,
+	failed: bool,
 	num_search_found: Option<usize>
 }
 
@@ -313,42 +314,35 @@ pub fn start_rendering(
 
 				// We know this is in range 'cause we're iterating over it but we still just want
 				// to be safe
-				let page = match doc.load_page(page_num as i32) {
-					Err(e) => {
-						sender.send(Err(RenderError::Doc(e)))?;
-						continue;
-					}
-					Ok(p) => p
-				};
+				let render_res = doc.load_page(page_num as i32).and_then(|page| {
+					// render the page
+					let ctx = render_single_page_to_ctx(
+						&page,
+						search_term.as_deref(),
+						rendered,
+						invert,
+						black,
+						white,
+						fit_or_fill,
+						rotate,
+						(area_w, area_h)
+					)?;
 
-				// render the page
-				match render_single_page_to_ctx(
-					&page,
-					search_term.as_deref(),
-					rendered,
-					invert,
-					black,
-					white,
-					fit_or_fill,
-					rotate,
-					(area_w, area_h)
-				) {
-					// If that fn returned Some, that means it needed to be re-rendered for some
-					// reason or another, so we're sending it here
-					Ok(ctx) => {
-						let w = ctx.pixmap.width();
-						let h = ctx.pixmap.height();
-						let cap = (w * h * u32::from(ctx.pixmap.n())) as usize + 16;
-						let mut pixels = Vec::with_capacity(cap);
-						if let Err(e) = ctx.pixmap.write_to(&mut pixels, mupdf::ImageFormat::PNM) {
-							sender.send(Err(RenderError::Doc(e)))?;
-							continue;
-						}
+					let w = ctx.pixmap.width();
+					let h = ctx.pixmap.height();
+					let cap = (w * h * u32::from(ctx.pixmap.n())) as usize + 16;
+					let mut pixels = Vec::with_capacity(cap);
+					ctx.pixmap.write_to(&mut pixels, mupdf::ImageFormat::PNM)?;
 
-						log::debug!("got pixmap for page {page_num} with WxH {w}x{h}");
+					log::debug!("got pixmap for page {page_num} with WxH {w}x{h}");
+					Ok((ctx, pixels))
+				});
 
+				match render_res {
+					Ok((ctx, pixels)) => {
 						rendered.num_search_found = Some(ctx.result_rects.len());
 						rendered.successful = true;
+						rendered.failed = false;
 
 						sender.send(Ok(RenderInfo::Page(PageInfo {
 							img_data: ImageData {
@@ -361,7 +355,10 @@ pub fn start_rendering(
 						})))?;
 					}
 					// And if we got an error, then obviously we need to propagate that
-					Err(e) => sender.send(Err(RenderError::Doc(e)))?
+					Err(e) => {
+						rendered.failed = true;
+						sender.send(Err(RenderError::Doc(e)))?;
+					}
 				}
 
 				// check if we've been told to change the area that we're rendering to,
@@ -452,7 +449,9 @@ pub fn start_rendering(
 			// So now we've just *searched* all the pages but not necessarily rendered all of them.
 			// So if there are any we have yet to render, we need to loop back to the beginning of
 			// this loop to continue rendering all of them
-			if rendered.iter().any(|r| !r.successful) && prerender == PrerenderLimit::All {
+			if rendered.iter().any(|r| !r.successful && !r.failed)
+				&& prerender == PrerenderLimit::All
+			{
 				continue;
 			}
 

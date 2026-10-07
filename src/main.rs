@@ -110,7 +110,7 @@ async fn inner_main() -> Result<(), WrappedErr> {
 		/// Defaults to 50ms.
 		optional --reload-delay reload_delay: u64
 		/// The number of pages to prerender surrounding the currently-shown page; 0 means no
-		/// limit. By default, there is no limit.
+		/// limit. Defaults to 20.
 		optional -p,--prerender prerender: usize
 		/// Custom white color, specified in css format (e.g. "FFFFFF" or "rgb(255, 255, 255)")
 		optional -w,--white-color white: String
@@ -285,9 +285,8 @@ async fn inner_main() -> Result<(), WrappedErr> {
 	// then we want to spawn off the rendering task
 	// We need to use the thread::spawn API so that this exists in a thread not owned by tokio,
 	// since the methods we call in `start_rendering` will panic if called in an async context
-	let prerender = flags
-		.prerender
-		.and_then(NonZeroUsize::new)
+	const DEFAULT_PRERENDER: usize = 20;
+	let prerender = NonZeroUsize::new(flags.prerender.unwrap_or(DEFAULT_PRERENDER))
 		.map_or(PrerenderLimit::All, PrerenderLimit::Limited);
 
 	let file_path = path.clone();
